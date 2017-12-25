@@ -57,6 +57,8 @@
 #include "utils.h"
 #include "socks5.h"
 #include "acl.h"
+#include "udp_control.h"
+#include "balancing.h"
 #include "http.h"
 #include "tls.h"
 #include "plugin.h"
@@ -1169,7 +1171,9 @@ create_remote(listen_ctx_t *listener,
 {
     struct sockaddr *remote_addr;
 
-    int index = rand() % listener->remote_num;
+//    int index = rand() % listener->remote_num;
+    int index = get_balanced_index();
+
     if (addr == NULL) {
         remote_addr = listener->remote_addr[index];
     } else {
@@ -1280,6 +1284,8 @@ main(int argc, char **argv)
     char *user       = NULL;
     char *local_port = NULL;
     char *local_addr = NULL;
+    char *control_port = NULL;
+    char *control_addr = NULL;
     char *password   = NULL;
     char *key        = NULL;
     char *timeout    = NULL;
@@ -1459,6 +1465,12 @@ main(int argc, char **argv)
         if (local_port == NULL) {
             local_port = conf->local_port;
         }
+        if (control_addr == NULL) {
+            control_addr = conf->control_addr;
+        }
+        if (control_port == NULL) {
+            control_port = conf->control_port;
+        }
         if (password == NULL) {
             password = conf->password;
         }
@@ -1554,6 +1566,10 @@ main(int argc, char **argv)
         local_addr = "127.0.0.1";
     }
 
+    if (control_addr == NULL) {
+        control_addr = "127.0.0.1";
+    }
+
     USE_SYSLOG(argv[0], pid_flags);
     if (pid_flags) {
         daemonize(pid_path);
@@ -1609,6 +1625,8 @@ main(int argc, char **argv)
     listen_ctx.remote_num  = 0;
     listen_ctx.remote_addr = ss_malloc(sizeof(struct sockaddr *) * remote_num);
     memset(listen_ctx.remote_addr, 0, sizeof(struct sockaddr *) * remote_num);
+    init_balancing(remote_num);
+
     for (i = 0; i < remote_num; i++) {
         char *host = remote_addr[i].host;
         char *port = remote_addr[i].port == NULL ? remote_port :
@@ -1702,6 +1720,10 @@ main(int argc, char **argv)
     // Init connections
     cork_dllist_init(&connections);
 
+    if (control_port != NULL){
+    	init_udp_control(control_addr, control_port);
+    }
+
     // Enter the loop
     ev_run(loop, 0);
 
@@ -1739,11 +1761,13 @@ start_ss_local_server(profile_t profile)
 
     char *remote_host = profile.remote_host;
     char *local_addr  = profile.local_addr;
+    char *control_addr = profile.control_addr;
     char *method      = profile.method;
     char *password    = profile.password;
     char *log         = profile.log;
     int remote_port   = profile.remote_port;
     int local_port    = profile.local_port;
+    int control_port  = profile.control_port;
     int timeout       = profile.timeout;
     int mtu           = 0;
     int mptcp         = 0;
@@ -1756,8 +1780,10 @@ start_ss_local_server(profile_t profile)
 
     char local_port_str[16];
     char remote_port_str[16];
+    char control_port_str[16];
     sprintf(local_port_str, "%d", local_port);
     sprintf(remote_port_str, "%d", remote_port);
+    sprintf(control_port_str, "%d", control_port);
 
     USE_LOGFILE(log);
 
@@ -1841,6 +1867,8 @@ start_ss_local_server(profile_t profile)
 
     // Init connections
     cork_dllist_init(&connections);
+
+    init_udp_control(control_addr, local_port_str);
 
     // Enter the loop
     ev_run(loop, 0);

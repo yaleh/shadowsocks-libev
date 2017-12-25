@@ -236,6 +236,10 @@ read_jconf(const char *file)
                 conf.local_addr = to_string(value);
             } else if (strcmp(name, "local_port") == 0) {
                 conf.local_port = to_string(value);
+            } else if (strcmp(name, "control_address") == 0) {
+                conf.control_addr = to_string(value);
+            } else if (strcmp(name, "control_port") == 0) {
+                conf.control_port = to_string(value);
             } else if (strcmp(name, "password") == 0) {
                 conf.password = to_string(value);
             } else if (strcmp(name, "key") == 0) {

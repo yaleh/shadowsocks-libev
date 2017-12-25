@@ -53,6 +53,8 @@
 #include "netutils.h"
 #include "utils.h"
 #include "common.h"
+#include "udp_control.h"
+#include "balancing.h"
 #include "redir.h"
 
 #ifndef EAGAIN
@@ -765,7 +767,8 @@ accept_cb(EV_P_ ev_io *w, int revents)
     setsockopt(serverfd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
 #endif
 
-    int index                    = rand() % listener->remote_num;
+//    int index                    = rand() % listener->remote_num;
+    int index = get_balanced_index();
     struct sockaddr *remote_addr = listener->remote_addr[index];
 
     int remotefd = socket(remote_addr->sa_family, SOCK_STREAM, IPPROTO_TCP);
@@ -879,6 +882,8 @@ main(int argc, char **argv)
     char *user       = NULL;
     char *local_port = NULL;
     char *local_addr = NULL;
+    char *control_port = NULL;
+    char *control_addr = NULL;
     char *password   = NULL;
     char *key        = NULL;
     char *timeout    = NULL;
@@ -1041,6 +1046,12 @@ main(int argc, char **argv)
         if (local_port == NULL) {
             local_port = conf->local_port;
         }
+        if (control_addr == NULL) {
+        	control_addr = conf->control_addr;
+        }
+        if (control_port == NULL) {
+        	control_port = conf->control_port;
+        }
         if (password == NULL) {
             password = conf->password;
         }
@@ -1138,6 +1149,10 @@ main(int argc, char **argv)
         local_addr = "127.0.0.1";
     }
 
+    if (control_addr == NULL) {
+        control_addr = "127.0.0.1";
+    }
+
     if (fast_open == 1) {
 #ifdef TCP_FASTOPEN
         LOGI("using tcp fast open");
@@ -1200,6 +1215,7 @@ main(int argc, char **argv)
     listen_ctx.remote_num  = remote_num;
     listen_ctx.remote_addr = ss_malloc(sizeof(struct sockaddr *) * remote_num);
     memset(listen_ctx.remote_addr, 0, sizeof(struct sockaddr *) * remote_num);
+    init_balancing(remote_num);    
     for (i = 0; i < remote_num; i++) {
         char *host = remote_addr[i].host;
         char *port = remote_addr[i].port == NULL ? remote_port :
@@ -1284,6 +1300,10 @@ main(int argc, char **argv)
 
     if (geteuid() == 0) {
         LOGI("running from root user");
+    }
+
+    if (control_port != NULL){
+    	init_udp_control(control_addr, control_port);
     }
 
     ev_run(loop, 0);

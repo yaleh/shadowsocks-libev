@@ -40,6 +40,8 @@ ss_local_SOURCES = utils.c \
                    cache.c \
                    acl.c \
                    netutils.c \
+                   udp_control.c \
+				           balancing.c \
                    local.c \
                    $(crypto_src) \
                    $(plugin_src) \
@@ -98,6 +100,8 @@ ss_redir_SOURCES = utils.c \
                    cache.c \
                    udprelay.c \
                    redir.c \
+		               udp_control.c \
+		               balancing.c \
                    $(crypto_src) \
                    $(plugin_src) \
                    $(sni_src)

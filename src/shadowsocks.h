@@ -26,10 +26,12 @@ typedef struct {
     /*  Required  */
     char *remote_host;    // hostname or ip of remote server
     char *local_addr;     // local ip to bind
+    char *control_addr;
     char *method;         // encryption method
     char *password;       // password of remote server
     int remote_port;      // port number of remote server
     int local_port;       // port number of local server
+    int control_port;
     int timeout;          // connection timeout
 
     /*  Optional, set NULL if not valid   */

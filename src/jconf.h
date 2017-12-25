@@ -67,6 +67,8 @@ typedef struct {
     char *remote_port;
     char *local_addr;
     char *local_port;
+    char *control_addr;
+    char *control_port;
     char *password;
     char *key;
     char *method;
