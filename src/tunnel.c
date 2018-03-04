@@ -1,7 +1,7 @@
 /*
  * tunnel.c - Setup a local port forwarding through remote shadowsocks server
  *
- * Copyright (C) 2013 - 2017, Max Lv <max.c.lv@gmail.com>
+ * Copyright (C) 2013 - 2018, Max Lv <max.c.lv@gmail.com>
  *
  * This file is part of the shadowsocks-libev.
  *
@@ -921,7 +921,7 @@ main(int argc, char **argv)
 
     if (argc == 1) {
         if (conf_path == NULL) {
-            conf_path = DEFAULT_CONF_PATH;
+            conf_path = get_default_conf();
         }
     }
 
@@ -1108,6 +1108,8 @@ main(int argc, char **argv)
     listen_ctx.iface   = iface;
     listen_ctx.mptcp   = mptcp;
 
+    LOGI("listening at %s:%s", local_addr, local_port);
+
     struct ev_loop *loop = EV_DEFAULT;
 
     if (mode != UDP_ONLY) {
@@ -1146,8 +1148,6 @@ main(int argc, char **argv)
     if (mode == UDP_ONLY) {
         LOGI("TCP relay disabled");
     }
-
-    LOGI("listening at %s:%s", local_addr, local_port);
 
     // setuid
     if (user != NULL && !run_as(user)) {

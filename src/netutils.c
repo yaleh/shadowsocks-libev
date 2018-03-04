@@ -1,7 +1,7 @@
 /*
  * netutils.c - Network utilities
  *
- * Copyright (C) 2013 - 2017, Max Lv <max.c.lv@gmail.com>
+ * Copyright (C) 2013 - 2018, Max Lv <max.c.lv@gmail.com>
  *
  * This file is part of the shadowsocks-libev.
  *
@@ -90,10 +90,14 @@ setinterface(int socket_fd, const char *interface_name)
 int
 bind_to_address(int socket_fd, const char *host)
 {
-    if (host != NULL) {
+    static struct sockaddr_storage storage = {0};
+    if (storage.ss_family == AF_INET) {
+        return bind(socket_fd, (struct sockaddr *)&storage, sizeof(struct sockaddr_in));
+    }
+    else if (storage.ss_family == AF_INET6) {
+        return bind(socket_fd, (struct sockaddr *)&storage, sizeof(struct sockaddr_in6));
+    } else if (host != NULL) {
         struct cork_ip ip;
-        struct sockaddr_storage storage;
-        memset(&storage, 0, sizeof(struct sockaddr_storage));
         if (cork_ip_init(&ip, host) != -1) {
             if (ip.version == 4) {
                 struct sockaddr_in *addr = (struct sockaddr_in *)&storage;
@@ -207,9 +211,6 @@ sockaddr_cmp(struct sockaddr_storage *addr1,
         return -1;
     if (p1_in->sin_family > p2_in->sin_family)
         return 1;
-    if (verbose) {
-        LOGI("sockaddr_cmp: sin_family equal? %d", p1_in->sin_family == p2_in->sin_family);
-    }
     /* compare ip4 */
     if (p1_in->sin_family == AF_INET) {
         /* just order it, ntohs not required */
@@ -217,9 +218,6 @@ sockaddr_cmp(struct sockaddr_storage *addr1,
             return -1;
         if (p1_in->sin_port > p2_in->sin_port)
             return 1;
-        if (verbose) {
-            LOGI("sockaddr_cmp: sin_port equal? %d", p1_in->sin_port == p2_in->sin_port);
-        }
         return memcmp(&p1_in->sin_addr, &p2_in->sin_addr, INET_SIZE);
     } else if (p1_in6->sin6_family == AF_INET6) {
         /* just order it, ntohs not required */
@@ -227,9 +225,6 @@ sockaddr_cmp(struct sockaddr_storage *addr1,
             return -1;
         if (p1_in6->sin6_port > p2_in6->sin6_port)
             return 1;
-        if (verbose) {
-            LOGI("sockaddr_cmp: sin6_port equal? %d", p1_in6->sin6_port == p2_in6->sin6_port);
-        }
         return memcmp(&p1_in6->sin6_addr, &p2_in6->sin6_addr,
                       INET6_SIZE);
     } else {

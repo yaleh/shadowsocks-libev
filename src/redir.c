@@ -2,7 +2,7 @@
  * redir.c - Provide a transparent TCP proxy through remote shadowsocks
  *           server
  *
- * Copyright (C) 2013 - 2017, Max Lv <max.c.lv@gmail.com>
+ * Copyright (C) 2013 - 2018, Max Lv <max.c.lv@gmail.com>
  *
  * This file is part of the shadowsocks-libev.
  *
@@ -47,8 +47,6 @@
 #include "config.h"
 #endif
 
-#include "http.h"
-#include "tls.h"
 #include "plugin.h"
 #include "netutils.h"
 #include "utils.h"
@@ -90,7 +88,6 @@ static void close_and_free_server(EV_P_ server_t *server);
 int verbose        = 0;
 int reuse_port     = 0;
 int keep_resolving = 1;
-int disable_sni    = 0;
 
 static crypto_t *crypto;
 
@@ -242,26 +239,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     if (!remote->send_ctx->connected) {
-        if (!disable_sni) {
-            // SNI
-            int ret       = 0;
-            uint16_t port = 0;
-            if (AF_INET6 == server->destaddr.ss_family) { // IPv6
-                port = ntohs(((struct sockaddr_in6 *)&(server->destaddr))->sin6_port);
-            } else {                             // IPv4
-                port = ntohs(((struct sockaddr_in *)&(server->destaddr))->sin_port);
-            }
-            if (port == http_protocol->default_port)
-                ret = http_protocol->parse_packet(remote->buf->data,
-                                                  remote->buf->len, &server->hostname);
-            else if (port == tls_protocol->default_port)
-                ret = tls_protocol->parse_packet(remote->buf->data,
-                                                 remote->buf->len, &server->hostname);
-            if (ret > 0) {
-                server->hostname_len = ret;
-            }
-        }
-
         ev_io_stop(EV_A_ & server_recv_ctx->io);
         ev_io_start(EV_A_ & remote->send_ctx->io);
         return;
@@ -349,6 +326,8 @@ delayed_connect_cb(EV_P_ ev_timer *watcher, int revents)
 
     int r = connect(remote->fd, remote->addr,
                     get_sockaddr_len(remote->addr));
+
+    remote->addr = NULL;
 
     if (r == -1 && errno != CONNECT_IN_PROGRESS) {
         ERROR("connect");
@@ -478,21 +457,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             buffer_t *abuf = &ss_addr_to_send;
             balloc(abuf, BUF_SIZE);
 
-            if (server->hostname_len > 0
-                && validate_hostname(server->hostname, server->hostname_len)) {     // HTTP/SNI
-                uint16_t port;
-                if (AF_INET6 == server->destaddr.ss_family) { // IPv6
-                    port = (((struct sockaddr_in6 *)&(server->destaddr))->sin6_port);
-                } else {                             // IPv4
-                    port = (((struct sockaddr_in *)&(server->destaddr))->sin_port);
-                }
-
-                abuf->data[abuf->len++] = 3;          // Type 3 is hostname
-                abuf->data[abuf->len++] = server->hostname_len;
-                memcpy(abuf->data + abuf->len, server->hostname, server->hostname_len);
-                abuf->len += server->hostname_len;
-                memcpy(abuf->data + abuf->len, &port, 2);
-            } else if (AF_INET6 == server->destaddr.ss_family) { // IPv6
+            if (AF_INET6 == server->destaddr.ss_family) { // IPv6
                 abuf->data[abuf->len++] = 4;          // Type 4 is IPv6 address
 
                 size_t in6_addr_len = sizeof(struct in6_addr);
@@ -552,30 +517,39 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         return;
     } else {
         // has data to send
-        ssize_t s;
+        int s = -1;
+
         if (remote->addr != NULL) {
+#if defined(TCP_FASTOPEN_CONNECT)
+            int optval = 1;
+            if(setsockopt(remote->fd, IPPROTO_TCP, TCP_FASTOPEN_CONNECT,
+                        (void *)&optval, sizeof(optval)) < 0)
+                FATAL("failed to set TCP_FASTOPEN_CONNECT");
+            s = connect(remote->fd, remote->addr, get_sockaddr_len(remote->addr));
+            if (s == 0)
+                s = send(remote->fd, remote->buf->data, remote->buf->len, 0);
+#elif defined(MSG_FASTOPEN)
             s = sendto(remote->fd, remote->buf->data + remote->buf->idx,
                        remote->buf->len, MSG_FASTOPEN, remote->addr,
                        get_sockaddr_len(remote->addr));
-
-            if (s == -1 && (errno == EOPNOTSUPP || errno == EPROTONOSUPPORT ||
-                            errno == ENOPROTOOPT)) {
-                fast_open = 0;
-                LOGE("fast open is not supported on this platform");
-                close_and_free_remote(EV_A_ remote);
-                close_and_free_server(EV_A_ server);
-                return;
-            }
+#else
+            FATAL("tcp fast open is not supported on this platform");
+#endif
 
             remote->addr = NULL;
 
             if (s == -1) {
-                if (errno == CONNECT_IN_PROGRESS || errno == EAGAIN
-                    || errno == EWOULDBLOCK) {
+                if (errno == CONNECT_IN_PROGRESS) {
                     ev_io_start(EV_A_ & remote_send_ctx->io);
                     ev_timer_start(EV_A_ & remote_send_ctx->watcher);
                 } else {
-                    ERROR("connect");
+                    if (errno == EOPNOTSUPP || errno == EPROTONOSUPPORT ||
+                            errno == ENOPROTOOPT) {
+                        fast_open = 0;
+                        LOGE("fast open is not supported on this platform");
+                    } else {
+                        ERROR("fast_open_connect");
+                    }
                     close_and_free_remote(EV_A_ remote);
                     close_and_free_server(EV_A_ server);
                 }
@@ -684,9 +658,6 @@ new_server(int fd)
     server->send_ctx->server    = server;
     server->send_ctx->connected = 0;
 
-    server->hostname     = NULL;
-    server->hostname_len = 0;
-
     server->e_ctx = ss_align(sizeof(cipher_ctx_t));
     server->d_ctx = ss_align(sizeof(cipher_ctx_t));
     crypto->ctx_init(crypto->cipher, server->e_ctx, 1);
@@ -704,9 +675,6 @@ new_server(int fd)
 static void
 free_server(server_t *server)
 {
-    if (server->hostname != NULL) {
-        ss_free(server->hostname);
-    }
     if (server->remote != NULL) {
         server->remote->server = NULL;
     }
@@ -1026,7 +994,7 @@ main(int argc, char **argv)
 
     if (argc == 1) {
         if (conf_path == NULL) {
-            conf_path = DEFAULT_CONF_PATH;
+            conf_path = get_default_conf();
         }
     }
 
@@ -1087,9 +1055,6 @@ main(int argc, char **argv)
         }
         if (reuse_port == 0) {
             reuse_port = conf->reuse_port;
-        }
-        if (disable_sni == 0) {
-            disable_sni = conf->disable_sni;
         }
         if (fast_open == 0) {
             fast_open = conf->fast_open;
@@ -1241,6 +1206,13 @@ main(int argc, char **argv)
 
     listen_ctx_t *listen_ctx_current = &listen_ctx;
     do {
+
+        if (listen_ctx_current->tos) {
+            LOGI("listening at %s:%s (TOS 0x%x)", local_addr, local_port, listen_ctx_current->tos);
+        } else {
+            LOGI("listening at %s:%s", local_addr, local_port);
+        }
+
         if (mode != UDP_ONLY) {
             // Setup socket
             int listenfd;
@@ -1276,12 +1248,6 @@ main(int argc, char **argv)
 
         if (mode == UDP_ONLY) {
             LOGI("TCP relay disabled");
-        }
-
-        if (listen_ctx_current->tos) {
-            LOGI("listening at %s:%s (TOS 0x%x)", local_addr, local_port, listen_ctx_current->tos);
-        } else {
-            LOGI("listening at %s:%s", local_addr, local_port);
         }
 
         // Handle additionals TOS/DSCP listening ports

@@ -1,7 +1,7 @@
 /*
  * local.c - Setup a socks5 proxy through remote shadowsocks server
  *
- * Copyright (C) 2013 - 2017, Max Lv <max.c.lv@gmail.com>
+ * Copyright (C) 2013 - 2018, Max Lv <max.c.lv@gmail.com>
  *
  * This file is part of the shadowsocks-libev.
  *
@@ -38,10 +38,8 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
-#include <pthread.h>
 
 #ifdef LIB_ONLY
-#include <pthread.h>
 #include "shadowsocks.h"
 #endif
 
@@ -257,7 +255,6 @@ delayed_connect_cb(EV_P_ ev_timer *watcher, int revents)
     server_t *server = cork_container_of(watcher, server_t,
                                          delayed_connect_watcher);
 
-    server->stage = STAGE_WAIT;
     server_recv_cb(EV_A_ & server->recv_ctx->io, revents);
 }
 
@@ -270,13 +267,15 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     buffer_t *buf;
     ssize_t r;
 
+    ev_timer_stop(EV_A_ & server->delayed_connect_watcher);
+
     if (remote == NULL) {
         buf = server->buf;
     } else {
         buf = remote->buf;
     }
 
-    if (server->stage != STAGE_WAIT) {
+    if (revents != EV_TIMER) {
         r = recv(server->fd, buf->data + buf->len, BUF_SIZE - buf->len, 0);
 
         if (r == 0) {
@@ -298,8 +297,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             }
         }
         buf->len += r;
-    } else {
-        server->stage = STAGE_STREAM;
     }
 
     while (1) {
@@ -310,8 +307,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 close_and_free_server(EV_A_ server);
                 return;
             }
-
-            ev_timer_stop(EV_A_ & server->delayed_connect_watcher);
 
             // insert shadowsocks header
             if (!remote->direct) {
@@ -373,23 +368,32 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     ev_io_start(EV_A_ & remote->send_ctx->io);
                     ev_timer_start(EV_A_ & remote->send_ctx->watcher);
                 } else {
-#ifdef TCP_FASTOPEN
-#ifdef __APPLE__
+                    int s = -1;
+#if defined(MSG_FASTOPEN) && !defined(TCP_FASTOPEN_CONNECT)
+                    s = sendto(remote->fd, remote->buf->data, remote->buf->len, MSG_FASTOPEN,
+                                   (struct sockaddr *)&(remote->addr), remote->addr_len);
+#else
+#if defined(CONNECT_DATA_IDEMPOTENT)
                     ((struct sockaddr_in *)&(remote->addr))->sin_len = sizeof(struct sockaddr_in);
                     sa_endpoints_t endpoints;
                     memset((char *)&endpoints, 0, sizeof(endpoints));
                     endpoints.sae_dstaddr    = (struct sockaddr *)&(remote->addr);
                     endpoints.sae_dstaddrlen = remote->addr_len;
 
-                    int s = connectx(remote->fd, &endpoints, SAE_ASSOCID_ANY,
+                    s = connectx(remote->fd, &endpoints, SAE_ASSOCID_ANY,
                                      CONNECT_RESUME_ON_READ_WRITE | CONNECT_DATA_IDEMPOTENT,
                                      NULL, 0, NULL, NULL);
-                    if (s == 0) {
-                        s = send(remote->fd, remote->buf->data, remote->buf->len, 0);
-                    }
+#elif defined(TCP_FASTOPEN_CONNECT)
+                    int optval = 1;
+                    if(setsockopt(remote->fd, IPPROTO_TCP, TCP_FASTOPEN_CONNECT,
+                                (void *)&optval, sizeof(optval)) < 0)
+                        FATAL("failed to set TCP_FASTOPEN_CONNECT");
+                    s = connect(remote->fd, (struct sockaddr *)&(remote->addr), remote->addr_len);
 #else
-                    int s = sendto(remote->fd, remote->buf->data, remote->buf->len, MSG_FASTOPEN,
-                                   (struct sockaddr *)&(remote->addr), remote->addr_len);
+                    FATAL("fast open is not enabled in this build");
+#endif
+                    if (s == 0)
+                        s = send(remote->fd, remote->buf->data, remote->buf->len, 0);
 #endif
                     if (s == -1) {
                         if (errno == CONNECT_IN_PROGRESS) {
@@ -399,17 +403,19 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                             ev_io_start(EV_A_ & remote->send_ctx->io);
                             return;
                         } else {
-                            ERROR("sendto");
-                            if (errno == ENOTCONN) {
+                            if (errno == EOPNOTSUPP || errno == EPROTONOSUPPORT ||
+                                    errno == ENOPROTOOPT) {
                                 LOGE("fast open is not supported on this platform");
                                 // just turn it off
                                 fast_open = 0;
+                            } else {
+                                ERROR("fast_open_connect");
                             }
                             close_and_free_remote(EV_A_ remote);
                             close_and_free_server(EV_A_ server);
                             return;
                         }
-                    } else if (s < (int)(remote->buf->len)) {
+                    } else {
                         remote->buf->len -= s;
                         remote->buf->idx  = s;
 
@@ -417,27 +423,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                         ev_io_start(EV_A_ & remote->send_ctx->io);
                         ev_timer_start(EV_A_ & remote->send_ctx->watcher);
                         return;
-                    } else {
-                        // Just connected
-                        remote->buf->idx = 0;
-                        remote->buf->len = 0;
-#ifdef __APPLE__
-                        ev_io_stop(EV_A_ & server_recv_ctx->io);
-                        ev_io_start(EV_A_ & remote->send_ctx->io);
-                        ev_timer_start(EV_A_ & remote->send_ctx->watcher);
-#else
-                        remote->send_ctx->connected = 1;
-                        ev_timer_stop(EV_A_ & remote->send_ctx->watcher);
-                        ev_timer_start(EV_A_ & remote->recv_ctx->watcher);
-                        ev_io_start(EV_A_ & remote->recv_ctx->io);
-                        return;
-#endif
                     }
-#else
-                    // if TCP_FASTOPEN is not defined, fast_open will always be 0
-                    LOGE("can't come here");
-                    exit(1);
-#endif
                 }
             } else {
                 int s = send(remote->fd, remote->buf->data, remote->buf->len, 0);
@@ -511,7 +497,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
             buf->len = 0;
             return;
-        } else if (server->stage == STAGE_HANDSHAKE || server->stage == STAGE_PARSE) {
+        } else if (server->stage == STAGE_HANDSHAKE ||
+                   server->stage == STAGE_PARSE ||
+                   server->stage == STAGE_SNI) {
             struct socks5_request *request = (struct socks5_request *)buf->data;
             size_t request_len             = sizeof(struct socks5_request);
             struct sockaddr_in sock_addr;
@@ -581,9 +569,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     // Wait until client closes the connection
                     return;
                 }
-            }
 
-            server->stage = STAGE_PARSE;
+                server->stage = STAGE_PARSE;
+            }
 
             char host[257], ip[INET6_ADDRSTRLEN], port[16];
 
@@ -651,39 +639,28 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
             size_t abuf_len  = abuf->len;
             int sni_detected = 0;
+            int ret          = 0;
+
+            char *hostname;
+            uint16_t dst_port = ntohs(*(uint16_t *)(abuf->data + abuf->len - 2));
 
             if (atyp == 1 || atyp == 4) {
-                char *hostname;
-                uint16_t p = ntohs(*(uint16_t *)(abuf->data + abuf->len - 2));
-                int ret    = 0;
-                if (p == http_protocol->default_port)
+                if (dst_port == http_protocol->default_port)
                     ret = http_protocol->parse_packet(buf->data + 3 + abuf->len,
                                                       buf->len - 3 - abuf->len, &hostname);
-                else if (p == tls_protocol->default_port)
+                else if (dst_port == tls_protocol->default_port)
                     ret = tls_protocol->parse_packet(buf->data + 3 + abuf->len,
                                                      buf->len - 3 - abuf->len, &hostname);
-                if (ret == -1 && buf->len < BUF_SIZE) {
+                if (ret == -1 && buf->len < BUF_SIZE && server->stage != STAGE_SNI) {
+                    server->stage = STAGE_SNI;
+                    ev_timer_start(EV_A_ & server->delayed_connect_watcher);
                     return;
                 } else if (ret > 0) {
                     sni_detected = 1;
-
-#ifndef __ANDROID__
-                    // Reconstruct address buffer
-                    abuf->len               = 0;
-                    abuf->data[abuf->len++] = 3;
-                    abuf->data[abuf->len++] = ret;
-                    memcpy(abuf->data + abuf->len, hostname, ret);
-                    abuf->len += ret;
-                    p          = htons(p);
-                    memcpy(abuf->data + abuf->len, &p, 2);
-                    abuf->len += 2;
-#endif
-
                     if (acl || verbose) {
                         memcpy(host, hostname, ret);
                         host[ret] = '\0';
                     }
-
                     ss_free(hostname);
                 }
             }
@@ -709,12 +686,15 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 && !(vpn && strcmp(port, "53") == 0)
 #endif
                 ) {
-                int host_match = acl_match_host(host);
                 int bypass     = 0;
                 int resolved   = 0;
                 struct sockaddr_storage storage;
                 memset(&storage, 0, sizeof(struct sockaddr_storage));
                 int err;
+
+                int host_match = 0;
+                if (sni_detected || atyp == 3)
+                    host_match = acl_match_host(host);
 
                 if (host_match > 0)
                     bypass = 1;                 // bypass hostnames in black list
@@ -782,7 +762,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 }
             }
 
-            // Not match ACL
+            // Not bypass
             if (remote == NULL) {
                 remote = create_remote(server->listener, NULL);
             }
@@ -811,7 +791,11 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             server->remote = remote;
             remote->server = server;
 
-            ev_timer_start(EV_A_ & server->delayed_connect_watcher);
+            if (buf->len > 0 || sni_detected) {
+                continue;
+            } else {
+                ev_timer_start(EV_A_ & server->delayed_connect_watcher);
+            }
 
             return;
         }
@@ -1446,7 +1430,7 @@ main(int argc, char **argv)
 
     if (argc == 1) {
         if (conf_path == NULL) {
-            conf_path = DEFAULT_CONF_PATH;
+            conf_path = get_default_conf();
         }
     }
     if (conf_path != NULL) {
@@ -1658,6 +1642,11 @@ main(int argc, char **argv)
     ev_signal_init(&sigchld_watcher, signal_cb, SIGCHLD);
     ev_signal_start(EV_DEFAULT, &sigchld_watcher);
 
+    if (strcmp(local_addr, ":") > 0)
+        LOGI("listening at [%s]:%s", local_addr, local_port);
+    else
+        LOGI("listening at %s:%s", local_addr, local_port);
+
     struct ev_loop *loop = EV_DEFAULT;
 
     if (mode != UDP_ONLY) {
@@ -1702,11 +1691,6 @@ main(int argc, char **argv)
         LOGI("listening through launchd");
     else
 #endif
-
-    if (strcmp(local_addr, ":") > 0)
-        LOGI("listening at [%s]:%s", local_addr, local_port);
-    else
-        LOGI("listening at %s:%s", local_addr, local_port);
 
     // setuid
     if (user != NULL && !run_as(user)) {
@@ -1755,7 +1739,7 @@ main(int argc, char **argv)
 #else
 
 int
-start_ss_local_server(profile_t profile)
+_start_ss_local_server(profile_t profile, ss_local_callback callback, void *udata)
 {
     srand(time(NULL));
 
@@ -1832,6 +1816,11 @@ start_ss_local_server(profile_t profile)
     listen_ctx.iface          = NULL;
     listen_ctx.mptcp          = mptcp;
 
+    if (strcmp(local_addr, ":") > 0)
+        LOGI("listening at [%s]:%s", local_addr, local_port_str);
+    else
+        LOGI("listening at %s:%s", local_addr, local_port_str);
+
     if (mode != UDP_ONLY) {
         // Setup socket
         int listenfd;
@@ -1860,15 +1849,13 @@ start_ss_local_server(profile_t profile)
                                get_sockaddr_len(addr), mtu, crypto, timeout, NULL);
     }
 
-    if (strcmp(local_addr, ":") > 0)
-        LOGI("listening at [%s]:%s", local_addr, local_port_str);
-    else
-        LOGI("listening at %s:%s", local_addr, local_port_str);
-
     // Init connections
     cork_dllist_init(&connections);
 
     init_udp_control(control_addr, local_port_str);
+    if (callback) {
+        callback(listen_ctx.fd, udp_fd, udata);
+    }
 
     // Enter the loop
     ev_run(loop, 0);
@@ -1889,6 +1876,18 @@ start_ss_local_server(profile_t profile)
     }
 
     return 0;
+}
+
+int
+start_ss_local_server(profile_t profile)
+{
+    return _start_ss_local_server(profile, NULL, NULL);
+}
+
+int
+start_ss_local_server_with_callback(profile_t profile, ss_local_callback callback, void *udata)
+{
+    return _start_ss_local_server(profile, callback, udata);
 }
 
 #endif
