@@ -1,0 +1,53 @@
+# Maintainer: Natanael Copa <ncopa@alpinelinux.org>
+pkgname=shadowsocks-libev
+pkgver=3.1.3
+pkgrel=2
+pkgdesc="lightweight secured SOCKS5 proxy"
+url="https://shadowsocks.org/en/download/servers.html"
+arch="all"
+license="GPL-3.0"
+depends="c-ares \
+                          libcrypto1.0 \
+                          libev \
+                          libsodium \
+                          mbedtls \
+                          pcre "
+makedepends="asciidoc autoconf automake libtool linux-headers
+	libressl-dev pcre-dev xmlto libev-dev udns-dev libsodium-dev zlib-dev
+                             build-base \
+                             c-ares-dev \
+                             curl \
+                             gettext-dev \
+                             mbedtls-dev \
+                             pcre-dev \
+                             tar"
+install=""
+subpackages="$pkgname-dev $pkgname-doc"
+source="shadowsocks-libev-$pkgver.tar.gz::https://github.com/yaleh/shadowsocks-libev/archive/v3.1.3-control-socket.tar.gz"
+builddir="$srcdir/shadowsocks-libev-3.1.3-control-socket"
+
+build() {
+	cd "$builddir"
+	curl -sSL https://github.com/shadowsocks/ipset/archive/shadowsocks.tar.gz | tar xz --strip 1 -C libipset || return 1
+        curl -sSL https://github.com/shadowsocks/libcork/archive/shadowsocks.tar.gz | tar xz --strip 1 -C libcork || return 1
+        curl -sSL https://github.com/shadowsocks/libbloom/archive/master.tar.gz | tar xz --strip 1 -C libbloom || return 1
+	./autogen.sh
+	./configure \
+		--build=$CBUILD \
+		--host=$CHOST \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--mandir=/usr/share/man \
+		--localstatedir=/var \
+		|| return 1
+	make || return 1
+}
+
+package() {
+	cd "$builddir"
+	make DESTDIR="$pkgdir" install || return 1
+}
+
+md5sums="59b764321672a30c47e5a84d1ada329a  shadowsocks-libev-3.1.3.tar.gz"
+sha256sums="f74bfc185391c7ea5a6765e4e81e92efe10ea7f30eacb2a0080dc1731d875249  shadowsocks-libev-3.1.3.tar.gz"
+sha512sums="81e8557ac12bab862fa474c26d4fae54eb409ea2f011043d18ad531d5e72226b114102131dc950caa00127f0a2287ffe656182e6524371ab111d83a7dc5420f9  shadowsocks-libev-3.1.3.tar.gz"

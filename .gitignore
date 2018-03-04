@@ -104,3 +104,7 @@ debian/debhelper-build-stamp
 
 # Visual Studio Code
 .vscode/*
+
+# Alpine
+alpine/build.sh
+
