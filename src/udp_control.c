@@ -37,14 +37,14 @@ static void udp_cb(EV_P_ ev_io *w, int revents) {
     size_t weights[MAX_BALANCING_SIZE];
     int read_chars, offset=0;
 
-    for(; length < MAX_BALANCING_SIZE && sscanf(buffer+offset, "%lu%n", &weights[length], &read_chars) == 1; length++){
+    for(; length < MAX_BALANCING_SIZE && sscanf(buffer+offset, "%zu%n", &weights[length], &read_chars) == 1; length++){
     	offset += read_chars;
     }
 
     printf("Weight inputs: ");
 
     for(int i=0; i<length; i++){
-    	printf("%lu ", weights[i]);
+    	printf("%zu ", weights[i]);
     }
 
     printf("\n");
@@ -60,8 +60,8 @@ static void udp_cb(EV_P_ ev_io *w, int revents) {
     printf("Weight outputs: ");
 
     for(int i=0; i<balancing_size; i++){
-    	printf("%lu ", weight_output[i]);
-    	bytes += sprintf(buffer+bytes, "%lu ", weight_output[i]);
+    	printf("%zu ", weight_output[i]);
+    	bytes += sprintf(buffer+bytes, "%zu ", weight_output[i]);
     }
 
     printf("\n");
