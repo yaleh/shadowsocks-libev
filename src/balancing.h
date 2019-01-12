@@ -1,7 +1,9 @@
 #ifndef _BALANCING_H
 #define _BALANCING_H
 
-#define MAX_BALANCING_SIZE 16
+#include "jconf.h"
+
+#define MAX_BALANCING_SIZE MAX_REMOTE_NUM
 
 int init_balancing(size_t count);
 
